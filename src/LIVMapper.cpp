@@ -195,7 +195,12 @@ void LIVMapper::initializeSubscribersAndPublishers(ros::NodeHandle &nh, image_tr
             nh.subscribe(lid_topic, 200000, &LIVMapper::livox_pcl_cbk, this): 
             nh.subscribe(lid_topic, 200000, &LIVMapper::standard_pcl_cbk, this);
   sub_imu = nh.subscribe(imu_topic, 200000, &LIVMapper::imu_cbk, this);
-  sub_img = nh.subscribe(img_topic, 200000, &LIVMapper::img_cbk, this);
+  // 订阅类型自适应:话题名以 /compressed 结尾用压缩回调,否则用 raw 回调
+  if (img_topic.size() >= 11 &&
+      img_topic.compare(img_topic.size() - 11, 11, "/compressed") == 0)
+    sub_img = nh.subscribe(img_topic, 200000, &LIVMapper::img_cbk2, this);
+  else
+    sub_img = nh.subscribe(img_topic, 200000, &LIVMapper::img_cbk, this);
   
   pubLaserCloudFullRes = nh.advertise<sensor_msgs::PointCloud2>("/cloud_registered", 100);
   pubNormal = nh.advertise<visualization_msgs::MarkerArray>("visualization_marker", 100);
@@ -369,7 +374,7 @@ void LIVMapper::handleLIO()
 
   voxelmap_manager->StateEstimation(state_propagat);
   _state = voxelmap_manager->state_;
-  _pv_list = voxelmap_manager->pv_list_;
+  _pv_list = voxelmap_manager->pv_list_; // feature points with measurement variance after state estimation, used for visualization and VIO
 
   double t2 = omp_get_wtime();
 
@@ -778,7 +783,7 @@ void LIVMapper::imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
 
   if (fabs(last_timestamp_lidar - timestamp) > 0.5 && (!ros_driver_fix_en))
   {
-    ROS_WARN("IMU and LiDAR not synced! delta time: %lf .\n", last_timestamp_lidar - timestamp);
+    ROS_WARN("IMU and LiDAR not synced! delta time: %lf .   last_timestamp_lidar: %lf  imu_timestamp: %lf \n", last_timestamp_lidar - timestamp, last_timestamp_lidar, timestamp);
   }
 
   if (ros_driver_fix_en) timestamp += std::round(last_timestamp_lidar - timestamp);
@@ -877,6 +882,87 @@ void LIVMapper::img_cbk(const sensor_msgs::ImageConstPtr &msg_in)
   // cv::imshow("img", img);
   // cv::waitKey(1);
   // cout<<"last_timestamp_img:::"<<last_timestamp_img<<endl;
+  mtx_buffer.unlock();
+  sig_buffer.notify_all();
+}
+
+// chl
+void LIVMapper::img_cbk2(const sensor_msgs::CompressedImageConstPtr &msg_in)
+{
+  if (!img_en) return;
+
+  // ====== 1. 解码（唯一必须改动点）======
+  cv::Mat img_decoded;
+  try
+  {
+    img_decoded = cv::imdecode(cv::Mat(msg_in->data), cv::IMREAD_COLOR);
+  }
+  catch (...)
+  {
+    ROS_ERROR("Failed to decode compressed image.");
+    return;
+  }
+
+  if (img_decoded.empty())
+  {
+    ROS_ERROR("Decoded image is empty.");
+    return;
+  }
+
+  // ====== 2. 构造“伪 Image message”（保持原逻辑结构）======
+  sensor_msgs::Image::Ptr msg(new sensor_msgs::Image());
+  msg->header = msg_in->header;
+
+  msg->height = img_decoded.rows;
+  msg->width  = img_decoded.cols;
+  msg->encoding = "bgr8";
+  msg->is_bigendian = 0;
+  msg->step = img_decoded.step;
+  msg->data.assign(img_decoded.data, img_decoded.data + img_decoded.total() * img_decoded.elemSize());
+
+  // ====== 以下完全保持你原逻辑不变 ======
+
+  // Hiliti2022 40Hz
+  if (hilti_en)
+  {
+    static int frame_counter = 0;
+    if (++frame_counter % 4 != 0) return;
+  }
+
+  double msg_header_time = msg->header.stamp.toSec() + img_time_offset;
+
+  if (abs(msg_header_time - last_timestamp_img) < 0.001) return;
+
+  ROS_INFO("Get image, its header time: %.6f", msg_header_time);
+
+  if (last_timestamp_lidar < 0) return;
+
+  if (msg_header_time < last_timestamp_img)
+  {
+    ROS_ERROR("image loop back. \n");
+    return;
+  }
+
+  mtx_buffer.lock();
+
+  double img_time_correct = msg_header_time;
+
+  if (img_time_correct - last_timestamp_img < 0.02)
+  {
+    ROS_WARN("Image need Jumps: %.6f", img_time_correct);
+    mtx_buffer.unlock();
+    sig_buffer.notify_all();
+    return;
+  }
+
+  // ====== 这里仍然复用你原函数 ======
+  cv::Mat img_cur = img_decoded;
+
+  img_buffer.push_back(img_cur);
+  img_time_buffer.push_back(img_time_correct);
+
+  last_timestamp_img = img_time_correct;
+
   mtx_buffer.unlock();
   sig_buffer.notify_all();
 }

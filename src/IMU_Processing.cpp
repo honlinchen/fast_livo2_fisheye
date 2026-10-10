@@ -140,10 +140,38 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, StatesGroup &state_inout, in
 
     N++;
   }
+
   IMU_mean_acc_norm = mean_acc.norm();
   state_inout.gravity = -mean_acc / mean_acc.norm() * G_m_s2;
   state_inout.rot_end = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
   state_inout.bias_g = Zero3d; // mean_gyr;
+
+  if(1){
+    // 2. IMU 坐标系下的重力方向
+    Eigen::Vector3d g_i = -1 * mean_acc.normalized();  // mean_acc 方向朝上
+    // 3. 世界系重力方向（z 轴向上）
+    Eigen::Vector3d g_w(0, 0, -1);
+    // 4. 求旋转：g_i -> g_w
+    Eigen::Vector3d axis = g_i.cross(g_w);
+    double cos_theta = g_i.dot(g_w);
+    Eigen::Quaterniond init_ratation;// 初始姿态
+    if (axis.norm() < 1e-6) {
+      init_ratation.setIdentity();
+    } else {
+      axis.normalize();
+      double theta = std::acos(std::min(1.0, std::max(-1.0, cos_theta)));
+      init_ratation = Eigen::AngleAxisd(theta, axis);
+    }
+    Eigen::Vector3d euler = RotMtoEuler(init_ratation.toRotationMatrix())*57;
+    double yaw   = euler[0];  // 绕Z轴旋转
+    double pitch = euler[1];  // 绕Y轴旋转
+    double roll  = euler[2];  // 绕X轴旋转
+    std::cout<<"****** IMU initialized.init_rotation (yaw, pitch, roll): "<< yaw << ","<< pitch << ","<< roll << std::endl;
+
+    state_inout.rot_end = init_ratation.toRotationMatrix();
+    state_inout.gravity = Eigen::Vector3d(0, 0, -1) * G_m_s2;
+  }
+
 
   last_imu = meas.imu.back();
 }

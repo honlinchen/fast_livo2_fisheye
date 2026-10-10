@@ -23,7 +23,7 @@ void calcBodyCov(Eigen::Vector3d &pb, const float range_inc, const float degree_
   direction.normalize();
   Eigen::Matrix3d direction_hat;
   direction_hat << 0, -direction(2), direction(1), direction(2), 0, -direction(0), -direction(1), direction(0), 0;
-  Eigen::Vector3d base_vector1(1, 1, -(direction(0) + direction(1)) / direction(2));
+  Eigen::Vector3d base_vector1(1, 1, -(direction(0) + direction(1)) / direction(2)); // v1 * direction = 0 
   base_vector1.normalize();
   Eigen::Vector3d base_vector2 = base_vector1.cross(direction);
   base_vector2.normalize();
@@ -288,7 +288,7 @@ void VoxelOctoTree::UpdateOctoTree(const pointWithVar &pv)
     }
   }
 }
-
+// 递归查找点 pw 所在的 voxel 节点，查到“可以使用的节点”为止（plane voxel / 未初始化 / 最大层）
 VoxelOctoTree *VoxelOctoTree::find_correspond(Eigen::Vector3d pw)
 {
   if (!init_octo_ || plane_ptr_->is_plane_ || (layer_ >= max_layer_)) return this;
@@ -351,7 +351,7 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
     V3D point_this(feats_down_body_->points[i].x, feats_down_body_->points[i].y, feats_down_body_->points[i].z);
     if (point_this[2] == 0) { point_this[2] = 0.001; }
     M3D var;
-    calcBodyCov(point_this, config_setting_.dept_err_, config_setting_.beam_err_, var);
+    calcBodyCov(point_this, config_setting_.dept_err_, config_setting_.beam_err_, var); // 计算点云特征点的写方差：距离，角度误差 -> 3*3协方差矩阵
     body_cov_list_.push_back(var);
     point_this = extR_ * point_this + extT_;
     M3D point_crossmat;

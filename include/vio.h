@@ -22,6 +22,7 @@ which is included as part of this source code package.
 #include <vikit/robust_cost.h>
 #include <vikit/vision.h>
 #include <vikit/pinhole_camera.h>
+#include <vikit/polynomial_camera.h>
 
 struct SubSparseMap
 {
@@ -86,6 +87,8 @@ public:
   int grid_size;
   vk::AbstractCamera *cam;
   vk::PinholeCamera *pinhole_cam;
+  vk::PolynomialCamera *poly_cam = nullptr;   // Polynomial(fisheye) 模型支持
+  cv::Mat undist_map1_, undist_map2_;         // 去畸变 remap 缓存
   StatesGroup *state;
   StatesGroup *state_propagat;
   M3D Rli, Rci, Rcl, Rcw, Jdphi_dR, Jdp_dt, Jdp_dR;

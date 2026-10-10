@@ -1,0 +1,101 @@
+common:
+  img_topic: "/camera_agent/img_right/compressed"
+  # img_topic: "/camera_agent/img_left/compressed"
+
+  lid_topic: "/livox/lidar"
+  imu_topic: "/livox/imu"
+  img_en: 1
+  lidar_en: 1
+  ros_driver_bug_fix: false
+
+extrin_calib:
+  # mid360
+  extrinsic_T: [ -0.011, -0.02329, 0.04412 ]
+  extrinsic_R: [ 1, 0, 0, 0, 1, 0, 0, 0, 1]
+
+  # right camera
+  Rcl: [ -7.9108999999999996e-01, -4.9492300000000000e-01, -3.5948300000000000e-01, 
+        4.1555199999999998e-01, -3.5691799999999999e-03, -9.0956300000000001e-01,
+        4.4888099999999997e-01, -8.6892899999999995e-01, 2.0849000000000001e-01]
+  Pcl: [-2.4311900000000001e-02, -8.1209900000000002e-02, -4.4335199999999998e-02]
+
+  # left camera
+  # Rcl: [  7.7476699999999998e-01, -5.0456800000000002e-01, 3.8098199999999999e-01, 
+  #         4.3403399999999998e-01, -1.3696800000000000e-02, -9.0079200000000004e-01,
+  #         4.5972900000000000e-01, 8.6326400000000003e-01, 2.0838799999999999e-01]
+  # Pcl: [2.6977899999999999e-02, -8.0705299999999994e-02, -4.2979999999999997e-02]
+
+time_offset:
+  imu_time_offset: 0.0
+  img_time_offset: 0.0
+  exposure_time_init: 0.0
+
+preprocess:
+  point_filter_num: 1
+  filter_size_surf: 0.1 # 0.2
+  lidar_type: 1 # Livox
+  scan_line: 6
+  blind: 0.6 # 0.1 0.3
+ 
+vio:
+  max_iterations: 5
+  outlier_threshold: 1000
+  img_point_cov: 100
+  patch_size: 8
+  patch_pyrimid_level: 4
+  normal_en: true
+  raycast_en: false
+  inverse_composition_en: false
+  exposure_estimate_en: true
+  inv_expo_cov: 0.1
+
+imu:
+  imu_en: true
+  imu_int_frame: 10
+  acc_cov: 0.5 # 0.1
+  gyr_cov: 0.5
+  b_acc_cov: 0.0001 # 0.1
+  b_gyr_cov: 0.0001 # 0.1
+
+lio:
+  max_iterations: 5
+  dept_err: 0.02
+  beam_err: 0.15
+  min_eigen_value: 0.005 # 0.0025
+  voxel_size: 0.4
+  max_layer: 2
+  max_points_num: 100
+  layer_init_num: [5, 5, 5, 5, 5]
+
+local_map:  
+  map_sliding_en: false
+  half_map_size: 100
+  sliding_thresh: 8
+
+uav:
+  imu_rate_odom: false
+  gravity_align_en: false
+
+publish:
+  dense_map_en: true
+  pub_effect_point_en: false 
+  pub_plane_en: false
+  pub_scan_num: 1
+  blind_rgb_points: 0.0
+
+evo:
+  seq_name: "exp09_cupola"
+  pose_output_en: true
+
+pcd_save:
+  pcd_save_en: true
+  type: 1 # 0: World Frame, 1: Body Frame;
+  colmap_output_en: true # need to set interval = -1
+  filter_size_pcd: 0.01
+  interval: -1
+  # how many LiDAR frames saved in each pcd file;
+  # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
+
+image_save:
+  img_save_en: true
+  interval: 1

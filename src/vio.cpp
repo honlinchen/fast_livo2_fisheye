@@ -128,6 +128,7 @@ void VIOManager::initializeVIO()
   if(colmap_output_en)
   {
     pinhole_cam = dynamic_cast<vk::PinholeCamera*>(cam);
+    poly_cam = dynamic_cast<vk::PolynomialCamera*>(cam);
     fout_colmap.open(DEBUG_FILE_DIR("Colmap/sparse/0/images.txt"), ios::out);
     fout_colmap << "# Image list with two lines of data per image:\n";
     fout_colmap << "#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME\n";
@@ -185,7 +186,7 @@ void VIOManager::resetGrid()
   // map_cur_frame.clear();
   // sample_points.clear();
 // }
-
+// 计算投影的雅可比矩阵（Jacobian），用于描述三维点在相机投影过程中对像素坐标的变化率
 void VIOManager::computeProjectionJacobian(V3D p, MD(2, 3) & J)
 {
   const double x = p[0];
@@ -199,7 +200,8 @@ void VIOManager::computeProjectionJacobian(V3D p, MD(2, 3) & J)
   J(1, 1) = fy * z_inv;
   J(1, 2) = -fy * y * z_inv_2;
 }
-
+// 获取图像块（patch），通过双线性插值计算图像块中每个像素的值，图像块的中心位置由pc指定，图像块的大小由patch_size和level指定
+// V2D pc: 图像块中心位置的像素坐标
 void VIOManager::getImagePatch(cv::Mat img, V2D pc, float *patch_tmp, int level)
 {
   const float u_ref = pc[0];
@@ -223,7 +225,8 @@ void VIOManager::getImagePatch(cv::Mat img, V2D pc, float *patch_tmp, int level)
     }
   }
 }
-
+// 将新的视觉点插入到稀疏视觉地图中，稀疏视觉地图是一个基于体素（voxel）的数据结构，每个体素包含一个视觉点列表和一个计数器
+// 体素的大小由voxel_size指定，视觉点的位置由pt_new的pos_属性指定，视觉点被插入到对应体素的视觉点列表中，如果该体素不存在，则创建一个新的体素并插入视觉点
 void VIOManager::insertPointIntoVoxelMap(VisualPoint *pt_new)
 {
   V3D pt_w(pt_new->pos_[0], pt_new->pos_[1], pt_new->pos_[2]);
@@ -248,7 +251,12 @@ void VIOManager::insertPointIntoVoxelMap(VisualPoint *pt_new)
     feat_map[position] = ot;
   }
 }
-
+// 计算仿射变换矩阵A_cur_ref，用于描述当前帧与参考帧之间的图像块（patch）变形关系，A_cur_ref是一个2x2的矩阵，表示当前帧中图像块相对于参考帧的缩放和旋转关系
+// 计算A_cur_ref的过程包括以下步骤：
+// 1. 根据当前帧与参考帧之间的相对变换T_cur_ref，参考帧中点的三维位置xyz_ref和法线normal_ref，计算当前帧中点的三维位置f_cur和参考帧中点的三维位置f_ref
+// 2. 根据当前帧中点的三维位置f_cur和参考帧中点的三维位置f_ref，计算当前帧中点在图像中的像素坐标px_cur和参考帧中点在图像中的像素坐标px_ref
+// 3. 根据当前帧中点在图像中的像素坐标px_cur和参考帧中点在图像中的像素坐标px_ref，以及参考帧中点在图像中的像素坐标px_ref和参考帧中点在图像中的像素坐标px_ref，计算当前帧中点在图像中的像素坐标px_du_cur和当前帧中点在图像中的像素坐标px_dv_cur
+// 4. 根据当前帧中点在图像中的像素坐标px_cur和当前帧中点在图像中的像素坐标px_du_cur，以及当前帧中点在图像中的像素坐标px_cur和当前帧中点在图像中的像素坐标px_dv_cur，计算仿射变换矩阵A_cur_ref的第一列和第二列
 void VIOManager::getWarpMatrixAffineHomography(const vk::AbstractCamera &cam, const V2D &px_ref, const V3D &xyz_ref, const V3D &normal_ref,
                                                   const SE3 &T_cur_ref, const int level_ref, Matrix2d &A_cur_ref)
 {
@@ -288,7 +296,7 @@ void VIOManager::getWarpMatrixAffine(const vk::AbstractCamera &cam, const Vector
   A_cur_ref.col(0) = (px_du - px_cur) / halfpatch_size;
   A_cur_ref.col(1) = (px_dv - px_cur) / halfpatch_size;
 }
-
+// 将参考帧中的图像块（patch）通过仿射变换矩阵A_cur_ref映射到当前帧中，得到当前帧中对应的图像块（patch），并将图像块中的像素值存储在patch数组中
 void VIOManager::warpAffine(const Matrix2d &A_cur_ref, const cv::Mat &img_ref, const Vector2d &px_ref, const int level_ref, const int search_level,
                                const int pyramid_level, const int halfpatch_size, float *patch)
 {
@@ -316,7 +324,9 @@ void VIOManager::warpAffine(const Matrix2d &A_cur_ref, const cv::Mat &img_ref, c
     }
   }
 }
-
+// 根据仿射变换矩阵A_cur_ref的特征值，选择最佳的金字塔层级（pyramid level）进行图像块（patch）的匹配，max_level是金字塔的最大层级
+// 计算A_cur_ref的行列式D，根据D的大小来判断图像块的变形程度，如果D大于3.0，则说明图像块发生了较大的变形，需要选择更高层级的金字塔进行匹配，以提高匹配的鲁棒性和准确性
+// 通过不断将D乘以0.25（相当于将图像块缩小一半），直到D不大于3.0或者达到最大层级max_level，来确定最佳的搜索层级search_level
 int VIOManager::getBestSearchLevel(const Matrix2d &A_cur_ref, const int max_level)
 {
   // Compute patch level in other image
@@ -329,7 +339,13 @@ int VIOManager::getBestSearchLevel(const Matrix2d &A_cur_ref, const int max_leve
   }
   return search_level;
 }
-
+// 计算归一化互相关系数（NCC），用于衡量当前帧中的图像块（cur_patch）与参考帧中的图像块（ref_patch）之间的相似度，NCC的值范围在-1到1之间，值越接近1表示两个图像块越相似
+// 计算NCC的过程包括以下步骤：
+// 1. 计算参考帧中的图像块（ref_patch）的平均值mean_ref和当前帧中的图像块（cur_patch）的平均值mean_curr
+// 2. 计算NCC的分子numerator，即当前帧中的图像块与参考帧中的图像块之间的协方差，计算NCC的分母demoniator1和demoniator2，即当前帧中的图像块与参考帧中的图像块的方差
+// 3. 最后通过将分子numerator除以分母的平方根来得到NCC的值，并添加一个小的常数1e-10来避免除以零的情况
+// ref_patch和cur_patch都是一维数组，长度为patch_size，表示图像块中的像素值
+// 通过计算NCC，可以评估当前帧中的图像块与参考帧中的图像块之间的匹配程度，从而在视觉里程计中进行特征点的匹配和跟踪
 double VIOManager::calculateNCC(float *ref_patch, float *cur_patch, int patch_size)
 {
   double sum_ref = std::accumulate(ref_patch, ref_patch + patch_size, 0.0);
@@ -348,7 +364,16 @@ double VIOManager::calculateNCC(float *ref_patch, float *cur_patch, int patch_si
   }
   return numerator / sqrt(demoniator1 * demoniator2 + 1e-10);
 }
-
+// 从视觉稀疏地图中检索（retrieve）点
+// 从稀疏视觉地图中检索与当前帧点云（pg）相关的视觉点，并将这些视觉点存储在sub_feat_map中，sub_feat_map是一个基于体素（voxel）的数据结构，每个体素包含一个计数器，用于记录当前帧点云中有多少点落在该体素内
+// 具体的检索过程包括以下步骤：
+// 1. 遍历当前帧点云中的每个点，计算该点在世界坐标系中的位置pt_w，并根据体素大小voxel_size计算该点所在的体素位置position
+// 2. 在sub_feat_map中查找该体素位置，如果该体素位置不存在，则在sub_feat_map中插入一个新的条目，并将计数器初始化为0；如果该体素位置已经存在，则将计数器重置为0
+// 3. 将当前帧点云中的每个点转换到当前相机坐标系中，并投影到图像像素坐标系中，如果投影后的像素坐标在图像的视野范围内，则将该点的深度值记录在深度图depth_img中，深度图的坐标是像素坐标，值是深度值，这个深度图后面会用于遮挡检测（occlusion check），避免视觉点被错误匹配
+// 4. 遍历sub_feat_map中的每个体素位置，检查该体素位置是否在稀疏视觉地图feat_map中存在，如果存在，则将该体素位置对应的视觉点列表存储在retrieve_voxel_points中，以便后续的视觉点匹配和跟踪；如果该体素位置在稀疏视觉地图中不存在，则将该体素位置添加到DeleteKeyList中，以便后续从sub_feat_map中删除这些不相关的体素位置
+// cv::Mat img,输入的当前帧图像，用于投影点云并生成深度图
+// vector<pointWithVar> &pg, 输入的点云数据，其中每个点包含三维坐标和法向量等信息
+// const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &plane_map输入的体素地图，用于查找点所在的体素以及相关的平面信息
 void VIOManager::retrieveFromVisualSparseMap(cv::Mat img, vector<pointWithVar> &pg, const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &plane_map)
 {
   if (feat_map.size() <= 0) return;
@@ -376,14 +401,14 @@ void VIOManager::retrieveFromVisualSparseMap(cv::Mat img, vector<pointWithVar> &
   // double t_insert, t_depth, t_position;
   // t_insert=t_depth=t_position=0;
 
-  int loc_xyz[3];
+  int loc_xyz[3]; // 体素id
 
   // printf("A0. initial depthmap: %.6lf \n", omp_get_wtime() - ts0);
   // double ts1 = omp_get_wtime();
 
   // printf("pg size: %zu \n", pg.size());
 
-  for (int i = 0; i < pg.size(); i++)
+  for (int i = 0; i < pg.size(); i++)// pg是点云帧降采样后的点云，带协方差, 投影点到相平面
   {
     // double t0 = omp_get_wtime();
 
@@ -400,28 +425,28 @@ void VIOManager::retrieveFromVisualSparseMap(cv::Mat img, vector<pointWithVar> &
     // double t1 = omp_get_wtime();
 
     auto iter = sub_feat_map.find(position);
-    if (iter == sub_feat_map.end()) { sub_feat_map[position] = 0; }
+    if (iter == sub_feat_map.end()) { sub_feat_map[position] = 0; } //找出当前帧点云看到的 voxel 集合,所以只记录了VOXEL_LOCATION position
     else { iter->second = 0; }
 
     // t_insert += omp_get_wtime()-t1;
     // double t2 = omp_get_wtime();
 
-    V3D pt_c(new_frame_->w2f(pt_w));
+    V3D pt_c(new_frame_->w2f(pt_w)); // 变换到当前相机坐标系
 
-    if (pt_c[2] > 0)
+    if (pt_c[2] > 0) // 只处理在相机前方的点云,如果点云在相机后面，就不进行投影了，因为在相机后面的点云是不可见的
     {
       V2D px;
       // px[0] = fx * pt_c[0]/pt_c[2] + cx;
       // px[1] = fy * pt_c[1]/pt_c[2]+ cy;
-      px = new_frame_->cam_->world2cam(pt_c);
+      px = new_frame_->cam_->world2cam(pt_c); // 投影到图像像素
 
-      if (new_frame_->cam_->isInFrame(px.cast<int>(), border))
-      {
+      if (new_frame_->cam_->isInFrame(px.cast<int>(), border)) // 判断当前帧点云是否在当前图像的视野范围内,如果在视野范围内，就把这个点云的深度值写入到深度图中，深度图的坐标是像素坐标，值是深度值
+      {                                                        // border是边界值，用于避免投影点过于靠近图像边缘，导致后续处理中的越界问题
         // cv::circle(img_cp, cv::Point2f(px[0], px[1]), 3, cv::Scalar(0, 0, 255), -1, 8);
         float depth = pt_c[2];
         int col = int(px[0]);
         int row = int(px[1]);
-        it[width * row + col] = depth;
+        it[width * row + col] = depth; // 记录 depth = Z, 生成 depth image,后面会用于 遮挡检测（occlusion check），避免视觉点被错误匹配
       }
     }
     // t_depth += omp_get_wtime()-t2;
@@ -435,23 +460,23 @@ void VIOManager::retrieveFromVisualSparseMap(cv::Mat img, vector<pointWithVar> &
   // printf("A. projection: %.6lf \n", omp_get_wtime() - ts0);
 
   // double t1 = omp_get_wtime();
-  vector<VOXEL_LOCATION> DeleteKeyList;
+  vector<VOXEL_LOCATION> DeleteKeyList; // 申明一个变量删除关键点列表，用于存储需要从 sub_feat_map 中删除的体素位置
 
-  for (auto &iter : sub_feat_map)
+  for (auto &iter : sub_feat_map)// sub_feat_map: 当前帧点云看到的 voxel 集合
   {
     VOXEL_LOCATION position = iter.first;
 
     // double t4 = omp_get_wtime();
-    auto corre_voxel = feat_map.find(position);
-    // double t5 = omp_get_wtime();
-
+    auto corre_voxel = feat_map.find(position); // feat_map: 稀疏视觉地图, 查找当前帧点云看到的 voxel 集合中哪些体素位置在稀疏视觉地图中存在，
+    // double t5 = omp_get_wtime();             // 如果存在，则将这些体素位置对应的视觉点列表存储在 retrieve_voxel_points 中，以便后续的视觉点匹配和跟踪；
+                                                // 如果不存在，则将这些体素位置添加到 DeleteKeyList 中，以便后续从 sub_feat_map 中删除这些不相关的体素位置
     if (corre_voxel != feat_map.end())
     {
       bool voxel_in_fov = false;
       std::vector<VisualPoint *> &voxel_points = corre_voxel->second->voxel_points;
       int voxel_num = voxel_points.size();
 
-      for (int i = 0; i < voxel_num; i++)
+      for (int i = 0; i < voxel_num; i++)  // 遍历当前体素位置 对应的 稀疏视觉地图中 对应corre_voxel 中的视觉点列表，检查这些视觉点是否在当前帧的视野范围内，如果在视野范围内，则将这些视觉点存储在 retrieve_voxel_points 中，以便后续的视觉点匹配和跟踪；如果不在视野范围内，则将这些视觉点从 retrieve_voxel_points 中删除，以避免后续的视觉点匹配和跟踪中出现错误
       {
         VisualPoint *pt = voxel_points[i];
         if (pt == nullptr) continue;
@@ -459,31 +484,31 @@ void VIOManager::retrieveFromVisualSparseMap(cv::Mat img, vector<pointWithVar> &
 
         V3D norm_vec(new_frame_->T_f_w_.rotation_matrix() * pt->normal_);
         V3D dir(new_frame_->T_f_w_ * pt->pos_);
-        if (dir[2] < 0) continue;
+        if (dir[2] < 0) continue;//如果点的方向向量的 Z 坐标小于 0，说明点位于相机后方，跳过
         // dir.normalize();
         // if (dir.dot(norm_vec) <= 0.17) continue; // 0.34 70 degree  0.17 80 degree 0.08 85 degree
 
-        V2D pc(new_frame_->w2c(pt->pos_));
-        if (new_frame_->cam_->isInFrame(pc.cast<int>(), border))
-        {
+        V2D pc(new_frame_->w2c(pt->pos_)); // 点到像素坐标投影
+        if (new_frame_->cam_->isInFrame(pc.cast<int>(), border)) //是否在当前帧的视野范围内
+        { // 图像被分割为: grid_size × grid_size
           // cv::circle(img_cp, cv::Point2f(pc[0], pc[1]), 3, cv::Scalar(0, 255, 255), -1, 8);
           voxel_in_fov = true;
           int index = static_cast<int>(pc[1] / grid_size) * grid_n_width + static_cast<int>(pc[0] / grid_size);
           grid_num[index] = TYPE_MAP;
           Vector3d obs_vec(new_frame_->pos() - pt->pos_);
           float cur_dist = obs_vec.norm();
-          if (cur_dist <= map_dist[index])
+          if (cur_dist <= map_dist[index]) // 每个grid，只保留 最近的地图点 -> 稀疏且均匀
           {
             map_dist[index] = cur_dist;
             retrieve_voxel_points[index] = pt;
           }
         }
       }
-      if (!voxel_in_fov) { DeleteKeyList.push_back(position); }
+      if (!voxel_in_fov) { DeleteKeyList.push_back(position); } // 删除不在当前帧视野范围内的体素位置
     }
   }
 
-  // RayCasting Module
+  // RayCasting Module: 有些grid虽然没有地图点，但可能被当前帧的点云射线穿过，这些网格也可以提供约束，所以不能直接删除
   if (raycast_en)
   {
     for (int i = 0; i < length; i++)
@@ -1521,6 +1546,7 @@ void VIOManager::updateState(cv::Mat img, int level)
 {
   if (total_points == 0) return;
   StatesGroup old_state = (*state);
+  double level_error_begin = -1.0;
 
   VectorXd z;
   MatrixXd H_sub;
@@ -1643,11 +1669,19 @@ void VIOManager::updateState(cv::Mat img, int level)
     //           << "\t new_error = " << error
     //           << std::endl;
 
+    if (iteration == 0)
+      printf("\033[0;33m[ VIO iter ] level %d it %d: avg photometric res = %.6f (first iter), n_meas = %d\033[0m\n",
+             level, iteration, error, n_meas);
+    else
+      printf("\033[0;33m[ VIO iter ] level %d it %d: avg photometric res = %.6f (last %.6f), n_meas = %d\033[0m\n",
+             level, iteration, error, last_error, n_meas);
+
     double t3 = omp_get_wtime();
 
     if (error <= last_error)
     {
       old_state = (*state);
+      if (level_error_begin < 0) level_error_begin = error;
       last_error = error;
 
       // K = (H.transpose() / img_point_cov * H + state->cov.inverse()).inverse() * H.transpose() / img_point_cov; auto
@@ -1684,6 +1718,9 @@ void VIOManager::updateState(cv::Mat img, int level)
 
     if (iteration == max_iterations || EKF_end) break;
   }
+  printf("\033[1;33m[ VIO level summary ] level %d: res begin %.6f -> converged %.6f (reduced %.1f%%)\033[0m\n",
+         level, level_error_begin, last_error,
+         level_error_begin > 0 ? (1.0 - last_error / level_error_begin) * 100.0 : 0.0);
   // if (state->inv_expo_time < 0.0)  {ROS_ERROR("reset expo time!!!!!!!!!!\n"); state->inv_expo_time = 0.0;}
 }
 
@@ -1768,7 +1805,30 @@ void VIOManager::dumpDataForColmap()
   std::string image_path = std::string(ROOT_DIR) + "Log/Colmap/images/" + cnt_str + ".png";
   
   cv::Mat img_rgb_undistort;
-  pinhole_cam->undistortImage(img_rgb, img_rgb_undistort);
+  if (pinhole_cam != nullptr)
+    pinhole_cam->undistortImage(img_rgb, img_rgb_undistort);
+  else if (poly_cam != nullptr)
+  {
+    // Polynomial(KB 式等距鱼眼):构建针孔目标图 -> 原畸变图的 remap 映射,严格去畸变
+    if (undist_map1_.empty())
+    {
+      undist_map1_ = cv::Mat::zeros(height, width, CV_32FC1);
+      undist_map2_ = cv::Mat::zeros(height, width, CV_32FC1);
+      for (int v = 0; v < height; ++v)
+        for (int u = 0; u < width; ++u)
+        {
+          const double x = (u - poly_cam->cx()) / poly_cam->fx();
+          const double y = (v - poly_cam->cy()) / poly_cam->fy();
+          Eigen::Vector2d src = poly_cam->world2cam(Eigen::Vector3d(x, y, 1.0));
+          undist_map1_.at<float>(v, u) = static_cast<float>(src[0]);
+          undist_map2_.at<float>(v, u) = static_cast<float>(src[1]);
+        }
+      cout << "[VIO] Polynomial camera undistort map built (" << width << "x" << height << ")" << endl;
+    }
+    cv::remap(img_rgb, img_rgb_undistort, undist_map1_, undist_map2_, cv::INTER_LINEAR);
+  }
+  else
+    img_rgb_undistort = img_rgb.clone();  // 其他模型:兜底导出原图
   cv::imwrite(image_path, img_rgb_undistort);
   
   Eigen::Quaterniond q(new_frame_->T_f_w_.rotation_matrix());
@@ -1803,7 +1863,7 @@ void VIOManager::processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unor
 
   double t1 = omp_get_wtime();
 
-  retrieveFromVisualSparseMap(img, pg, feat_map);
+  retrieveFromVisualSparseMap(img, pg, feat_map); // 从视觉稀疏地图中检索（retrieve）点,输入：当前图像、点云和特征地图，输出：更新的点云和特征地图
 
   double t2 = omp_get_wtime();
 
